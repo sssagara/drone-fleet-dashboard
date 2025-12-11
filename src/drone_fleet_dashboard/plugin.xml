@@ -1,0 +1,19 @@
+<library path="src">
+  <class name="Drone Fleet Dashboard" 
+         type="drone_fleet_dashboard.drone_fleet_dashboard.DroneFleetDashboard" 
+         base_class_type="rqt_gui_py::Plugin">
+    <description>
+      A dashboard for monitoring and controlling a fleet of up to 5 drones simultaneously.
+      Features include battery voltage monitoring, flight mode display, IP address configuration,
+      and custom command buttons.
+    </description>
+    <qtgui>
+      <group>
+        <label>Drone Management</label>
+      </group>
+      <label>Drone Fleet Dashboard</label>
+      <icon type="theme">system-run</icon>
+      <statustip>Monitor and control multiple drones</statustip>
+    </qtgui>
+  </class>
+</library>
