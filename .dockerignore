@@ -1,0 +1,11 @@
+log/*
+build/*
+devel/*
+.git
+.gitignore
+.vscode
+.DS_Store
+*.swp
+*.swo
+*~
+.catkin_tools
