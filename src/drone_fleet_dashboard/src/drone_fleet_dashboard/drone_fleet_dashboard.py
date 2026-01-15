@@ -6,7 +6,8 @@ from python_qt_binding import loadUi
 from python_qt_binding.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton, QLineEdit, QGridLayout
 from python_qt_binding.QtCore import Qt, QTimer
 from python_qt_binding.QtGui import QFont, QPalette, QColor
-from std_msgs.msg import Float32, String
+from sensor_msgs.msg import BatteryState
+from mavros_msgs.msg import State
 from geometry_msgs.msg import PoseStamped
 import subprocess
 import os
@@ -55,7 +56,7 @@ class DroneFleetDashboard(Plugin):
         # Create drone panels
         self.drones = []
         for i in range(5):
-            drone_panel = self.create_drone_panel(i + 1)
+            drone_panel = self.create_drone_panel(i)
             self.drones.append(drone_panel)
             left_layout.addWidget(drone_panel['group'])
         
@@ -191,12 +192,12 @@ class DroneFleetDashboard(Plugin):
         main_layout = QVBoxLayout()
         main_layout.setSpacing(12)
         
-        # Top row - IP and Connect
+        # Top row - UAV namespace and Connect
         top_row = QHBoxLayout()
         top_row.setSpacing(10)
         
-        ip_label = QLabel("IP ADDR:")
-        ip_label.setStyleSheet("""
+        ns_label = QLabel("NAMESPACE:")
+        ns_label.setStyleSheet("""
             QLabel {
                 color: #ffff00;
                 font-size: 13px;
@@ -205,10 +206,11 @@ class DroneFleetDashboard(Plugin):
             }
         """)
         
-        ip_input = QLineEdit()
-        ip_input.setPlaceholderText("192.168.1.X")
-        ip_input.setMaximumWidth(150)
-        ip_input.setStyleSheet("""
+        ns_input = QLineEdit()
+        ns_input.setPlaceholderText(f"uav{drone_id}")
+        ns_input.setText(f"uav{drone_id}")
+        ns_input.setMaximumWidth(150)
+        ns_input.setStyleSheet("""
             QLineEdit {
                 background: rgba(0, 0, 0, 200);
                 border: 2px solid #0088ff;
@@ -243,10 +245,10 @@ class DroneFleetDashboard(Plugin):
                 background: #002244;
             }
         """)
-        connect_btn.clicked.connect(lambda: self.connect_drone(drone_id, ip_input.text()))
+        connect_btn.clicked.connect(lambda: self.connect_drone(drone_id, ns_input.text()))
         
-        top_row.addWidget(ip_label)
-        top_row.addWidget(ip_input)
+        top_row.addWidget(ns_label)
+        top_row.addWidget(ns_input)
         top_row.addWidget(connect_btn)
         top_row.addStretch()
         
@@ -349,7 +351,7 @@ class DroneFleetDashboard(Plugin):
                 background: #440000;
             }
         """)
-        cmd1_btn.clicked.connect(lambda: self.run_command1(drone_id, ip_input.text()))
+        cmd1_btn.clicked.connect(lambda: self.run_command1(drone_id, ns_input.text()))
         
         cmd2_btn = QPushButton("RETURN TO BASE")
         cmd2_btn.setStyleSheet("""
@@ -371,7 +373,7 @@ class DroneFleetDashboard(Plugin):
                 background: #000044;
             }
         """)
-        cmd2_btn.clicked.connect(lambda: self.run_command2(drone_id, ip_input.text()))
+        cmd2_btn.clicked.connect(lambda: self.run_command2(drone_id, ns_input.text()))
         
         buttons_layout.addWidget(cmd1_btn)
         buttons_layout.addWidget(cmd2_btn)
@@ -388,54 +390,57 @@ class DroneFleetDashboard(Plugin):
         drone_data = {
             'group': group,
             'id': drone_id,
-            'ip_input': ip_input,
+            'ns_input': ns_input,
             'status_value': status_value,
             'battery_value': battery_value,
             'mode_value': mode_value,
             'pos_value': pos_value,
             'connected': False,
             'battery_sub': None,
-            'mode_sub': None,
+            'state_sub': None,
             'pose_sub': None,
-            'ip_address': None
+            'namespace': None
         }
         
         return drone_data
     
-    def connect_drone(self, drone_id, ip_address):
-        """Connect to a drone with given IP address"""
-        if not ip_address:
-            rospy.logwarn(f"UNIT {drone_id}: NO IP ADDRESS PROVIDED")
+    def connect_drone(self, drone_id, namespace):
+        """Connect to a drone with given namespace"""
+        if not namespace:
+            rospy.logwarn(f"UNIT {drone_id}: NO NAMESPACE PROVIDED")
             return
         
-        drone = self.drones[drone_id - 1]
+        drone = self.drones[drone_id]
         
         # Disconnect previous subscribers
         if drone['battery_sub']:
             drone['battery_sub'].unregister()
-        if drone['mode_sub']:
-            drone['mode_sub'].unregister()
+        if drone['state_sub']:
+            drone['state_sub'].unregister()
         if drone['pose_sub']:
             drone['pose_sub'].unregister()
         
-        drone['ip_address'] = ip_address
+        drone['namespace'] = namespace
         
-        # Create ROS subscribers
+        # Create ROS subscribers for MAVROS topics
         try:
+            # Subscribe to battery topic
             drone['battery_sub'] = rospy.Subscriber(
-                f'/drone_{drone_id}/battery_voltage',
-                Float32,
+                f'/{namespace}/mavros/battery',
+                BatteryState,
                 lambda msg, d=drone: self.battery_callback(msg, d)
             )
             
-            drone['mode_sub'] = rospy.Subscriber(
-                f'/drone_{drone_id}/flight_mode',
-                String,
-                lambda msg, d=drone: self.mode_callback(msg, d)
+            # Subscribe to state topic (for mode)
+            drone['state_sub'] = rospy.Subscriber(
+                f'/{namespace}/mavros/state',
+                State,
+                lambda msg, d=drone: self.state_callback(msg, d)
             )
             
+            # Subscribe to local position topic
             drone['pose_sub'] = rospy.Subscriber(
-                f'/drone_{drone_id}/local_position/pose',
+                f'/{namespace}/mavros/local_position/pose',
                 PoseStamped,
                 lambda msg, d=drone: self.pose_callback(msg, d)
             )
@@ -443,7 +448,7 @@ class DroneFleetDashboard(Plugin):
             drone['connected'] = True
             drone['status_value'].setText("ONLINE")
             drone['status_value'].setStyleSheet("QLabel { color: #00ff00; font-weight: bold; font-size: 14px; }")
-            rospy.loginfo(f"UNIT {drone_id}: CONNECTION ESTABLISHED - {ip_address}")
+            rospy.loginfo(f"UNIT {drone_id}: CONNECTION ESTABLISHED - /{namespace}")
             
         except Exception as e:
             rospy.logerr(f"UNIT {drone_id}: CONNECTION FAILED - {str(e)}")
@@ -451,10 +456,11 @@ class DroneFleetDashboard(Plugin):
             drone['status_value'].setStyleSheet("QLabel { color: #ffaa00; font-weight: bold; font-size: 14px; }")
     
     def battery_callback(self, msg, drone):
-        """Update battery voltage"""
-        voltage = msg.data
+        """Update battery voltage from MAVROS BatteryState message"""
+        voltage = msg.voltage
         drone['battery_value'].setText(f"{voltage:.2f} V")
         
+        # Color code based on voltage
         if voltage > 11.5:
             color = "#00ff00"
         elif voltage > 10.5:
@@ -464,51 +470,63 @@ class DroneFleetDashboard(Plugin):
         
         drone['battery_value'].setStyleSheet(f"QLabel {{ color: {color}; font-weight: bold; font-size: 14px; }}")
     
-    def mode_callback(self, msg, drone):
-        """Update flight mode"""
-        mode = msg.data
-        drone['mode_value'].setText(mode)
+    def state_callback(self, msg, drone):
+        """Update flight mode from MAVROS State message"""
+        mode = msg.mode
+        armed = msg.armed
         
-        if mode in ["ARMED", "AUTO", "MISSION"]:
-            color = "#0088ff"
-        elif mode in ["MANUAL", "LOITER"]:
-            color = "#00ff88"
-        elif mode in ["EMERGENCY", "ABORT"]:
-            color = "#ff0000"
+        # Display mode with armed status
+        if armed:
+            display_mode = f"{mode} (ARMED)"
         else:
-            color = "#888888"
+            display_mode = mode
+        
+        drone['mode_value'].setText(display_mode)
+        
+        # Color code based on mode and armed status
+        if armed:
+            if mode in ["AUTO.MISSION", "AUTO.TAKEOFF", "AUTO.LOITER"]:
+                color = "#0088ff"  # Blue for auto modes
+            elif mode in ["MANUAL", "STABILIZED", "ALTCTL", "POSCTL"]:
+                color = "#00ff88"  # Green for manual modes
+            else:
+                color = "#ffaa00"  # Orange for other armed modes
+        else:
+            color = "#888888"  # Gray for disarmed
         
         drone['mode_value'].setStyleSheet(f"QLabel {{ color: {color}; font-weight: bold; font-size: 14px; }}")
     
     def pose_callback(self, msg, drone):
-        """Update position"""
+        """Update position from MAVROS local_position/pose"""
         x = msg.pose.position.x
         y = msg.pose.position.y
         z = msg.pose.position.z
         drone['pos_value'].setText(f"X: {x:.2f} / Y: {y:.2f} / Z: {z:.2f}")
         drone['pos_value'].setStyleSheet("QLabel { color: #00ff88; font-weight: bold; font-size: 13px; }")
     
-    def run_command1(self, drone_id, ip_address):
-        """Emergency Stop"""
-        if not ip_address:
-            rospy.logwarn(f"UNIT {drone_id}: NO IP ADDRESS CONFIGURED")
+    def run_command1(self, drone_id, namespace):
+        """Emergency Stop - Send land command"""
+        if not namespace:
+            rospy.logwarn(f"UNIT {drone_id}: NO NAMESPACE CONFIGURED")
             return
         
-        command = f"rostopic pub -1 /drone_{drone_id}/emergency std_msgs/Bool 'data: true'"
+        # Use MAVROS land service
+        command = f"rosservice call /{namespace}/mavros/cmd/land"
         
         try:
-            rospy.loginfo(f"UNIT {drone_id}: EMERGENCY STOP ACTIVATED")
+            rospy.loginfo(f"UNIT {drone_id}: EMERGENCY LANDING ACTIVATED")
             subprocess.Popen(command, shell=True)
         except Exception as e:
             rospy.logerr(f"UNIT {drone_id}: COMMAND FAILED - {str(e)}")
     
-    def run_command2(self, drone_id, ip_address):
-        """Return to Base"""
-        if not ip_address:
-            rospy.logwarn(f"UNIT {drone_id}: NO IP ADDRESS CONFIGURED")
+    def run_command2(self, drone_id, namespace):
+        """Return to Base - Send RTL command"""
+        if not namespace:
+            rospy.logwarn(f"UNIT {drone_id}: NO NAMESPACE CONFIGURED")
             return
         
-        command = f"rostopic pub -1 /drone_{drone_id}/return_to_home std_msgs/Bool 'data: true'"
+        # Set mode to RTL (Return to Launch)
+        command = f"rosservice call /{namespace}/mavros/set_mode \"custom_mode: 'AUTO.RTL'\""
         
         try:
             rospy.loginfo(f"UNIT {drone_id}: RETURN TO BASE COMMAND SENT")
@@ -518,58 +536,65 @@ class DroneFleetDashboard(Plugin):
     
     # Global fleet control commands
     def global_command_1(self):
-        """LAUNCH"""
+        """LAUNCH - Arm and takeoff all drones"""
         rospy.loginfo("FLEET COMMAND: LAUNCH SEQUENCE INITIATED")
         for drone in self.drones:
-            if drone['connected'] and drone['ip_address']:
-                command = f"rostopic pub -1 /drone_{drone['id']}/start_mission std_msgs/Bool 'data: true'"
-                subprocess.Popen(command, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: LAUNCH COMMAND SENT")
+            if drone['connected'] and drone['namespace']:
+                # Arm the drone
+                arm_cmd = f"rosservice call /{drone['namespace']}/mavros/cmd/arming \"value: true\""
+                subprocess.Popen(arm_cmd, shell=True)
+                rospy.loginfo(f"UNIT {drone['id']}: ARM COMMAND SENT")
+                
+                # Set to offboard or mission mode
+                mode_cmd = f"rosservice call /{drone['namespace']}/mavros/set_mode \"custom_mode: 'AUTO.MISSION'\""
+                subprocess.Popen(mode_cmd, shell=True)
+                rospy.loginfo(f"UNIT {drone['id']}: MISSION MODE ACTIVATED")
     
     def global_command_2(self):
-        """ABORT"""
+        """ABORT - Disarm all drones"""
         rospy.loginfo("FLEET COMMAND: ABORT MISSION")
         for drone in self.drones:
-            if drone['connected'] and drone['ip_address']:
-                command = f"rostopic pub -1 /drone_{drone['id']}/abort_mission std_msgs/Bool 'data: true'"
-                subprocess.Popen(command, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: ABORT COMMAND SENT")
+            if drone['connected'] and drone['namespace']:
+                # Land first
+                land_cmd = f"rosservice call /{drone['namespace']}/mavros/cmd/land"
+                subprocess.Popen(land_cmd, shell=True)
+                rospy.loginfo(f"UNIT {drone['id']}: LANDING COMMAND SENT")
     
     def global_command_3(self):
-        """FORMATION"""
+        """FORMATION - Set all to position control mode"""
         rospy.loginfo("FLEET COMMAND: FORMATION MODE ACTIVATED")
         for drone in self.drones:
-            if drone['connected'] and drone['ip_address']:
-                command = f"rostopic pub -1 /drone_{drone['id']}/formation_mode std_msgs/Bool 'data: true'"
+            if drone['connected'] and drone['namespace']:
+                command = f"rosservice call /{drone['namespace']}/mavros/set_mode \"custom_mode: 'POSCTL'\""
                 subprocess.Popen(command, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: FORMATION MODE ENGAGED")
+                rospy.loginfo(f"UNIT {drone['id']}: POSITION CONTROL MODE ENGAGED")
     
     def global_command_4(self):
         """LAND ALL"""
         rospy.loginfo("FLEET COMMAND: LAND ALL UNITS")
         for drone in self.drones:
-            if drone['connected'] and drone['ip_address']:
-                command = f"rostopic pub -1 /drone_{drone['id']}/land std_msgs/Bool 'data: true'"
+            if drone['connected'] and drone['namespace']:
+                command = f"rosservice call /{drone['namespace']}/mavros/cmd/land"
                 subprocess.Popen(command, shell=True)
                 rospy.loginfo(f"UNIT {drone['id']}: LANDING COMMAND SENT")
     
     def global_command_5(self):
-        """CALIBRATE"""
+        """CALIBRATE - Start calibration"""
         rospy.loginfo("FLEET COMMAND: CALIBRATION SEQUENCE")
         for drone in self.drones:
-            if drone['connected'] and drone['ip_address']:
-                # SSH command to run script on drone
-                command = f"ssh ubuntu@{drone['ip_address']} 'bash /home/ubuntu/scripts/calibrate.sh' &"
+            if drone['connected'] and drone['namespace']:
+                # Example: calibrate magnetometer
+                command = f"rosservice call /{drone['namespace']}/mavros/cmd/calibrate_mag"
                 subprocess.Popen(command, shell=True)
                 rospy.loginfo(f"UNIT {drone['id']}: CALIBRATION STARTED")
     
     def global_command_6(self):
-        """SYSTEM CHECK"""
+        """SYSTEM CHECK - Request system status"""
         rospy.loginfo("FLEET COMMAND: SYSTEM CHECK INITIATED")
         for drone in self.drones:
-            if drone['connected'] and drone['ip_address']:
-                # SSH command to run script on drone
-                command = f"ssh ubuntu@{drone['ip_address']} 'bash /home/ubuntu/scripts/system_check.sh' &"
+            if drone['connected'] and drone['namespace']:
+                # Echo system status
+                command = f"rostopic echo /{drone['namespace']}/mavros/sys_status -n 1"
                 subprocess.Popen(command, shell=True)
                 rospy.loginfo(f"UNIT {drone['id']}: SYSTEM CHECK IN PROGRESS")
     
@@ -583,21 +608,21 @@ class DroneFleetDashboard(Plugin):
         for drone in self.drones:
             if drone['battery_sub']:
                 drone['battery_sub'].unregister()
-            if drone['mode_sub']:
-                drone['mode_sub'].unregister()
+            if drone['state_sub']:
+                drone['state_sub'].unregister()
             if drone['pose_sub']:
                 drone['pose_sub'].unregister()
     
     def save_settings(self, plugin_settings, instance_settings):
         """Save settings"""
         for i, drone in enumerate(self.drones):
-            ip = drone['ip_input'].text()
-            if ip:
-                instance_settings.set_value(f'drone_{i+1}_ip', ip)
+            ns = drone['ns_input'].text()
+            if ns:
+                instance_settings.set_value(f'drone_{i}_ns', ns)
     
     def restore_settings(self, plugin_settings, instance_settings):
         """Restore settings"""
         for i, drone in enumerate(self.drones):
-            ip = instance_settings.value(f'drone_{i+1}_ip', '')
-            if ip:
-                drone['ip_input'].setText(ip)
+            ns = instance_settings.value(f'drone_{i}_ns', '')
+            if ns:
+                drone['ns_input'].setText(ns)

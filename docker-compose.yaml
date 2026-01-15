@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   drone_fleet_dashboard:
     build:
@@ -22,8 +20,7 @@ services:
       - /home/$USER/.Xauthority:/root/.Xauthority:rw
       
       # Source code for live code changes
-      - ~/Downloads/workspaces/drone_fleet_dashboard_ws/src:/root/catkin_ws/src:rw
-      - ~/Downloads/workspaces/drone_fleet_dashboard_ws/log:/root/catkin_ws/log:rw
+      - .:/root/catkin_ws/src:rw
       
       # ROS master socket (if using local ROS master on host)
       - /tmp/ros:/tmp/ros:rw
@@ -46,7 +43,7 @@ services:
     # Restart policy
     restart: "no"
     
-    # # Entry point
-    # stdin_open: true
-    # tty: true
-    # command: /bin/bash -c "cd /root/catkin_ws && source devel/setup.bash && roslaunch drone_fleet_dashboard drone_fleet_dashboard.launch"
+    # Entry point
+    stdin_open: true
+    tty: true
+    command: /bin/bash -c "cd /root/catkin_ws && source devel/setup.bash && catkin_make && roslaunch drone_fleet_dashboard drone_fleet_dashboard.launch"
