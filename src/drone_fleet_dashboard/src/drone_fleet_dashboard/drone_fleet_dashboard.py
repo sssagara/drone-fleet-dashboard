@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from rqt_gui_py.plugin import Plugin
-from python_qt_binding.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton, QLineEdit, QGridLayout
+from python_qt_binding.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton, QLineEdit, QGridLayout, QSlider, QMessageBox
 from python_qt_binding.QtCore import Qt, QTimer
 from python_qt_binding.QtGui import QFont, QPalette, QColor
 import socket
@@ -47,9 +47,7 @@ class TelemetryClient:
                                 if message.get('type') == 'telemetry':
                                     with self.data_lock:
                                         self.telemetry_data = message.get('data', {})
-                                    print(f"Received telemetry for {len(self.telemetry_data)} drones: {list(self.telemetry_data.keys())}")
                             except json.JSONDecodeError as e:
-                                print(f"JSON decode error: {e}, data: {msg[:100]}")
                                 pass
                 else:
                     # Connection closed
@@ -63,7 +61,6 @@ class TelemetryClient:
                 import time
                 time.sleep(2)  # Wait before reconnecting
             except Exception as e:
-                print(f"Telemetry client error: {e}")
                 self.connected = False
                 if self.socket:
                     self.socket.close()
@@ -119,7 +116,7 @@ class DroneFleetDashboard(Plugin):
         left_layout.setSpacing(15)
         
         # Warning banner
-        warning = QLabel('⚠ SYSTEM ACTIVE - MONITORING MODE ⚠')
+        warning = QLabel('⚠ SYSTEM ACTIVE - INTERACTIVE DEMONSTRATION MODE ⚠')
         warning.setAlignment(Qt.AlignCenter)
         warning.setStyleSheet("""
             QLabel {
@@ -138,9 +135,9 @@ class DroneFleetDashboard(Plugin):
         """)
         left_layout.addWidget(warning)
         
-        # Create drone panels (only 2 for now)
+        # Create drone panels (6 drones)
         self.drones = []
-        for i in range(1, 3):  # Only drone 1 and 2
+        for i in range(1, 7):
             drone_panel = self.create_drone_panel(i)
             self.drones.append(drone_panel)
             left_layout.addWidget(drone_panel['group'])
@@ -173,40 +170,178 @@ class DroneFleetDashboard(Plugin):
         right_buttons_layout = QVBoxLayout()
         right_buttons_layout.setSpacing(12)
         
-        # Create 3 active global control buttons
-        button_configs = [
-            ("LAUNCH", "#004400", "#00ff00", self.global_command_launch),
-            ("LAND ALL", "#664400", "#ffaa00", self.global_command_land_all),
-            ("EMERGENCY STOP", "#660000", "#ff0000", self.global_command_emergency),
-        ]
+        # Launch button
+        launch_btn = QPushButton("LAUNCH ►")
+        launch_btn.setMinimumHeight(50)
+        launch_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #004400, stop:1 #004400dd);
+                border: 2px solid #00ff00;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                font-family: 'Courier New';
+                letter-spacing: 1px;
+                text-align: left;
+                padding-left: 15px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #004400ee, stop:1 #004400ff);
+            }
+        """)
+        launch_btn.clicked.connect(self.global_command_launch)
+        right_buttons_layout.addWidget(launch_btn)
         
-        for label, bg_color, border_color, callback in button_configs:
-            btn = QPushButton(label)
-            btn.setMinimumHeight(50)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 {bg_color}, stop:1 {bg_color}dd);
-                    border: 2px solid {border_color};
-                    color: white;
-                    font-weight: bold;
-                    font-size: 12px;
-                    font-family: 'Courier New';
-                    letter-spacing: 1px;
-                    text-align: left;
-                    padding-left: 15px;
-                }}
-                QPushButton:hover {{
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 {bg_color}ee, stop:1 {bg_color}ff);
-                    border: 2px solid {border_color};
-                }}
-                QPushButton:pressed {{
-                    background: {bg_color};
-                }}
-            """)
-            btn.clicked.connect(callback)
-            right_buttons_layout.addWidget(btn)
+        # Abort button
+        abort_btn = QPushButton("ABORT ►")
+        abort_btn.setMinimumHeight(50)
+        abort_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #660000, stop:1 #660000dd);
+                border: 2px solid #ff0000;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                font-family: 'Courier New';
+                letter-spacing: 1px;
+                text-align: left;
+                padding-left: 15px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #880000, stop:1 #880000ff);
+            }
+        """)
+        abort_btn.clicked.connect(self.global_command_abort)
+        right_buttons_layout.addWidget(abort_btn)
+        
+        # Formation button
+        formation_btn = QPushButton("FORMATION ►")
+        formation_btn.setMinimumHeight(50)
+        formation_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #000066, stop:1 #000066dd);
+                border: 2px solid #0088ff;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                font-family: 'Courier New';
+                letter-spacing: 1px;
+                text-align: left;
+                padding-left: 15px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #000088, stop:1 #000088ff);
+            }
+        """)
+        formation_btn.clicked.connect(self.global_command_formation)
+        right_buttons_layout.addWidget(formation_btn)
+        
+        # Land All button
+        land_btn = QPushButton("LAND ALL ►")
+        land_btn.setMinimumHeight(50)
+        land_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #664400, stop:1 #664400dd);
+                border: 2px solid #ffaa00;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                font-family: 'Courier New';
+                letter-spacing: 1px;
+                text-align: left;
+                padding-left: 15px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #885500, stop:1 #885500ff);
+            }
+        """)
+        land_btn.clicked.connect(self.global_command_land_all)
+        right_buttons_layout.addWidget(land_btn)
+        
+        # Calibrate button (renamed to Reboot System)
+        reboot_btn = QPushButton("REBOOT SYSTEM ►")
+        reboot_btn.setMinimumHeight(50)
+        reboot_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #440066, stop:1 #440066dd);
+                border: 2px solid #aa00ff;
+                color: white;
+                font-weight: bold;
+                font-size: 12px;
+                font-family: 'Courier New';
+                letter-spacing: 1px;
+                text-align: left;
+                padding-left: 15px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #550088, stop:1 #550088ff);
+            }
+        """)
+        reboot_btn.clicked.connect(self.global_command_reboot)
+        right_buttons_layout.addWidget(reboot_btn)
+        
+        # Emergency Stop Slider
+        emergency_container = QWidget()
+        emergency_layout = QVBoxLayout(emergency_container)
+        emergency_layout.setContentsMargins(0, 0, 0, 0)
+        
+        emergency_label = QLabel("EMERGENCY STOP")
+        emergency_label.setStyleSheet("""
+            QLabel {
+                color: #ff0000;
+                font-weight: bold;
+                font-size: 11px;
+                font-family: 'Courier New';
+                text-align: center;
+            }
+        """)
+        emergency_label.setAlignment(Qt.AlignCenter)
+        
+        self.emergency_slider = QSlider(Qt.Horizontal)
+        self.emergency_slider.setMinimum(0)
+        self.emergency_slider.setMaximum(100)
+        self.emergency_slider.setValue(0)
+        self.emergency_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 2px solid #ff0000;
+                height: 10px;
+                background: #330000;
+            }
+            QSlider::handle:horizontal {
+                background: #ff0000;
+                border: 2px solid #ff0000;
+                width: 20px;
+                margin: -5px 0;
+            }
+        """)
+        self.emergency_slider.valueChanged.connect(self.emergency_slider_changed)
+        
+        emergency_instruction = QLabel("◄ Slide to activate")
+        emergency_instruction.setStyleSheet("""
+            QLabel {
+                color: #ff6666;
+                font-size: 10px;
+                font-family: 'Courier New';
+                text-align: center;
+            }
+        """)
+        emergency_instruction.setAlignment(Qt.AlignCenter)
+        
+        emergency_layout.addWidget(emergency_label)
+        emergency_layout.addWidget(self.emergency_slider)
+        emergency_layout.addWidget(emergency_instruction)
+        
+        right_buttons_layout.addWidget(emergency_container)
         
         right_buttons_layout.addStretch()
         right_group.setLayout(right_buttons_layout)
@@ -274,12 +409,12 @@ class DroneFleetDashboard(Plugin):
         main_layout = QVBoxLayout()
         main_layout.setSpacing(12)
         
-        # Top row - Connection info
+        # Top row - IP and Connect
         top_row = QHBoxLayout()
         top_row.setSpacing(10)
         
-        port_label = QLabel(f"PORT: 1454{drone_id-1}")
-        port_label.setStyleSheet("""
+        ip_label = QLabel("IP ADDR:")
+        ip_label.setStyleSheet("""
             QLabel {
                 color: #ffff00;
                 font-size: 13px;
@@ -288,7 +423,49 @@ class DroneFleetDashboard(Plugin):
             }
         """)
         
-        top_row.addWidget(port_label)
+        ip_input = QLineEdit()
+        ip_input.setPlaceholderText(f"192.168.65.{100+drone_id}")
+        ip_input.setMaximumWidth(150)
+        ip_input.setStyleSheet("""
+            QLineEdit {
+                background: rgba(0, 0, 0, 200);
+                border: 2px solid #0088ff;
+                color: #00ff88;
+                padding: 6px 10px;
+                font-size: 13px;
+                font-family: 'Courier New';
+            }
+            QLineEdit:focus {
+                border: 2px solid #00ffff;
+            }
+        """)
+        
+        connect_btn = QPushButton("CONNECT")
+        connect_btn.setMaximumWidth(100)
+        connect_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #003366, stop:1 #004488);
+                border: 2px solid #0088ff;
+                color: #00ffff;
+                padding: 6px 15px;
+                font-size: 12px;
+                font-weight: bold;
+                font-family: 'Courier New';
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #004488, stop:1 #0055aa);
+            }
+            QPushButton:pressed {
+                background: #002244;
+            }
+        """)
+        connect_btn.clicked.connect(lambda: self.connect_drone(drone_id, ip_input.text()))
+        
+        top_row.addWidget(ip_label)
+        top_row.addWidget(ip_input)
+        top_row.addWidget(connect_btn)
         top_row.addStretch()
         
         # Info grid
@@ -392,12 +569,12 @@ class DroneFleetDashboard(Plugin):
         """)
         cmd1_btn.clicked.connect(lambda: self.drone_emergency_stop(drone_id))
         
-        cmd2_btn = QPushButton("LAND")
+        cmd2_btn = QPushButton("RETURN TO BASE")
         cmd2_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #664400, stop:1 #996600);
-                border: 2px solid #ffaa00;
+                    stop:0 #000066, stop:1 #0000aa);
+                border: 2px solid #0088ff;
                 color: white;
                 padding: 8px 15px;
                 font-size: 12px;
@@ -406,10 +583,10 @@ class DroneFleetDashboard(Plugin):
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #885500, stop:1 #bb7700);
+                    stop:0 #000088, stop:1 #0000cc);
             }
             QPushButton:pressed {
-                background: #443300;
+                background: #000044;
             }
         """)
         cmd2_btn.clicked.connect(lambda: self.drone_land(drone_id))
@@ -429,6 +606,7 @@ class DroneFleetDashboard(Plugin):
         drone_data = {
             'group': group,
             'id': drone_id,
+            'ip_input': ip_input,
             'status_value': status_value,
             'battery_value': battery_value,
             'mode_value': mode_value,
@@ -437,36 +615,27 @@ class DroneFleetDashboard(Plugin):
         
         return drone_data
     
+    def connect_drone(self, drone_id, ip_address):
+        """Connect button clicked - just for display, actual connection is automatic"""
+        if ip_address:
+            print(f"UNIT {drone_id}: Manual connection to {ip_address} (telemetry is automatic via pymavlink)")
+        else:
+            print(f"UNIT {drone_id}: No IP address entered")
+    
     def update_ui_from_telemetry(self):
         """Update UI with telemetry data (called by Qt timer in main thread)"""
         telemetry_data = self.telemetry_client.get_telemetry_data()
         
         if not telemetry_data:
-            # No data yet, mark as offline
             self.check_connection_status()
             return
         
-        # Debug print (only occasionally)
-        if not hasattr(self, '_update_count'):
-            self._update_count = 0
-        self._update_count += 1
-        if self._update_count % 10 == 0:  # Print every 10 updates (1 second)
-            print(f"UI Update: Processing telemetry for {len(telemetry_data)} drones: {list(telemetry_data.keys())}")
-        
         for drone in self.drones:
             drone_id = drone['id']
-            # JSON converts dict keys to strings, so we need to use string key
             drone_id_str = str(drone_id)
-            
-            if self._update_count <= 3:
-                print(f"DEBUG: Looking for drone_id={drone_id_str} (original: {drone_id})")
             
             if drone_id_str in telemetry_data:
                 data = telemetry_data[drone_id_str]
-                
-                # Debug print for first few updates
-                if self._update_count <= 3:
-                    print(f"  Drone {drone_id}: Voltage={data.get('battery_voltage', 0):.2f}V, Mode={data.get('flight_mode', 'N/A')}, Armed={data.get('armed', False)}")
                 
                 # Update status
                 drone['status_value'].setText("ONLINE")
@@ -474,7 +643,7 @@ class DroneFleetDashboard(Plugin):
                 
                 # Update battery
                 voltage = data.get('battery_voltage', 0.0)
-                drone['battery_value'].setText(f"{voltage:.2f} V")
+                drone['battery_value'].setText(f"{voltage:.1f} V")
                 
                 if voltage > 11.5:
                     color = "#00ff00"
@@ -497,7 +666,7 @@ class DroneFleetDashboard(Plugin):
                 drone['mode_value'].setText(display_mode)
                 
                 if armed:
-                    if mode in ["GUIDED", "AUTO", "MISSION", "AUTO_MISSION", "AUTO_TAKEOFF"]:
+                    if mode in ["GUIDED", "AUTO", "MISSION", "AUTO_MISSION", "AUTO_TAKEOFF", "AUTO_LOITER"]:
                         color = "#0088ff"
                     elif mode in ["MANUAL", "STABILIZE", "LOITER", "STABILIZED", "POSCTL", "ALTCTL"]:
                         color = "#00ff88"
@@ -508,27 +677,36 @@ class DroneFleetDashboard(Plugin):
                 
                 drone['mode_value'].setStyleSheet(f"QLabel {{ color: {color}; font-weight: bold; font-size: 14px; }}")
                 
-                # Update position
+                # Update position (3 decimal places)
                 position = data.get('position', [0, 0, 0])
-                drone['pos_value'].setText(f"X: {position[0]:.2f} / Y: {position[1]:.2f} / Z: {position[2]:.2f}")
+                drone['pos_value'].setText(f"X: {position[0]:.3f} / Y: {position[1]:.3f} / Z: {position[2]:.3f}")
                 drone['pos_value'].setStyleSheet("QLabel { color: #00ff88; font-weight: bold; font-size: 13px; }")
-            else:
-                # Drone not in telemetry data - mark as offline
-                if self._update_count <= 3:
-                    print(f"  Drone {drone_id}: NOT IN TELEMETRY DATA (looking for key '{drone_id_str}')")
-        
-        # Check connection status periodically
-        if self._update_count % 10 == 0:
-            self.check_connection_status()
     
     def check_connection_status(self):
         """Check connection status periodically"""
         if not self.telemetry_client.connected:
-            # Mark all drones as offline if server disconnected
             for drone in self.drones:
                 drone['status_value'].setText("OFFLINE")
                 drone['status_value'].setStyleSheet("QLabel { color: #ff0000; font-weight: bold; font-size: 14px; }")
     
+    def emergency_slider_changed(self, value):
+        """Handle emergency slider movement"""
+        if value >= 90:
+            # Trigger emergency stop
+            reply = QMessageBox.warning(
+                self._widget,
+                "EMERGENCY STOP",
+                "CONFIRM EMERGENCY FLIGHT TERMINATION FOR ALL UNITS?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.global_command_emergency()
+            
+            # Reset slider
+            self.emergency_slider.setValue(0)
+        
     def drone_emergency_stop(self, drone_id):
         """Individual drone emergency stop"""
         print(f"UNIT {drone_id}: EMERGENCY STOP ACTIVATED")
@@ -539,7 +717,7 @@ class DroneFleetDashboard(Plugin):
     
     def drone_land(self, drone_id):
         """Individual drone land"""
-        print(f"UNIT {drone_id}: LAND COMMAND SENT")
+        print(f"UNIT {drone_id}: RETURN TO BASE COMMAND SENT")
         self.telemetry_client.send_command({
             'type': 'drone_land',
             'drone_id': drone_id
@@ -547,9 +725,14 @@ class DroneFleetDashboard(Plugin):
     
     # Global fleet control commands
     def global_command_launch(self):
-        """LAUNCH - Takeoff all drones"""
+        """LAUNCH - Takeoff all drones to 1m and hold"""
         print("FLEET COMMAND: LAUNCH SEQUENCE INITIATED")
         self.telemetry_client.send_command({'type': 'launch'})
+    
+    def global_command_abort(self):
+        """ABORT - Stop and land all"""
+        print("FLEET COMMAND: ABORT - LANDING ALL UNITS")
+        self.telemetry_client.send_command({'type': 'land_all'})
     
     def global_command_land_all(self):
         """LAND ALL"""
@@ -560,6 +743,16 @@ class DroneFleetDashboard(Plugin):
         """EMERGENCY STOP ALL"""
         print("FLEET COMMAND: EMERGENCY STOP ALL UNITS")
         self.telemetry_client.send_command({'type': 'emergency'})
+    
+    def global_command_reboot(self):
+        """REBOOT SYSTEM - Reboot all flight controllers"""
+        print("FLEET COMMAND: REBOOTING ALL FLIGHT CONTROLLERS")
+        self.telemetry_client.send_command({'type': 'reboot'})
+    
+    def global_command_formation(self):
+        """FORMATION - Placeholder for future"""
+        print("FLEET COMMAND: FORMATION MODE (PLACEHOLDER)")
+        self.telemetry_client.send_command({'type': 'formation'})
     
     def shutdown_plugin(self):
         """Cleanup"""

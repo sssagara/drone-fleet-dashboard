@@ -74,10 +74,37 @@ class MavlinkTelemetry:
                 
                 # Process flight mode
                 elif msg_type == 'HEARTBEAT':
-                    mode = mavutil.mode_string_v10(msg)
-                    self.flight_mode = mode
+                    # PX4 uses custom_mode differently than ArduPilot
+                    custom_mode = msg.custom_mode
+                    base_mode = msg.base_mode
+                    
+                    # PX4 mode mapping (simplified)
+                    # Get main mode from custom_mode
+                    main_mode = (custom_mode >> 16) & 0xFF
+                    sub_mode = (custom_mode >> 24) & 0xFF
+                    
+                    # Try to get readable mode
+                    if main_mode == 1:  # Manual modes
+                        mode_names = {0: 'MANUAL', 1: 'ALTCTL', 2: 'POSCTL', 3: 'ACRO', 4: 'RATTITUDE', 5: 'STABILIZED'}
+                        self.flight_mode = mode_names.get(sub_mode, f'MANUAL_{sub_mode}')
+                    elif main_mode == 2:  # Assisted modes
+                        mode_names = {0: 'AUTO_READY', 1: 'AUTO_TAKEOFF', 2: 'AUTO_LOITER', 3: 'AUTO_MISSION', 4: 'AUTO_RTL', 5: 'AUTO_LAND', 6: 'AUTO_FOLLOW', 7: 'AUTO_PRECLAND'}
+                        self.flight_mode = mode_names.get(sub_mode, f'AUTO_{sub_mode}')
+                    elif main_mode == 3:  # Auto modes
+                        self.flight_mode = 'OFFBOARD'
+                    else:
+                        # Fallback: just use the custom_mode number
+                        px4_modes = {
+                            0: 'MANUAL', 1: 'ALTCTL', 2: 'POSCTL', 3: 'AUTO_MISSION',
+                            4: 'AUTO_LOITER', 5: 'AUTO_RTL', 6: 'ACRO', 7: 'OFFBOARD',
+                            8: 'STABILIZED', 9: 'RATTITUDE', 10: 'AUTO_TAKEOFF',
+                            11: 'AUTO_LAND', 12: 'AUTO_FOLLOW_TARGET', 13: 'AUTO_PRECLAND',
+                            14: 'ORBIT'
+                        }
+                        self.flight_mode = px4_modes.get(custom_mode & 0xFF, f'MODE_{custom_mode}')
+                    
                     # Extract armed status from base_mode
-                    self.armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
+                    self.armed = (base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
                     self.update_server_data()
                 
                 # Process local position
@@ -97,13 +124,7 @@ class MavlinkTelemetry:
             'position': self.local_position,
             'armed': self.armed
         }
-        # Debug output every 2 seconds
-        if not hasattr(self, '_last_debug') or time.time() - self._last_debug > 2:
-            print(f"Drone {self.drone_id} telemetry: Voltage={self.battery_voltage:.2f}V, Mode={self.flight_mode}, Pos={self.local_position}, Armed={self.armed}")
-            self._last_debug = time.time()
         self.server.update_drone_data(self.drone_id, data)
-        print(f"DEBUG: Drone {self.drone_id} - type: {type(self.drone_id)}, value: {repr(self.drone_id)}")
-        
     
     def arm(self):
         """Arm the vehicle"""
@@ -119,24 +140,26 @@ class MavlinkTelemetry:
         self.master.motors_disarmed_wait()
         print(f"Drone {self.drone_id}: Disarmed")
     
-    def takeoff(self, altitude=10.0):
+    def takeoff(self, altitude=5.0):
         """
-        Takeoff to specified altitude
+        Takeoff to specified altitude (mimics 'commander takeoff')
         
         Args:
-            altitude: Target altitude in meters
+            altitude: Target altitude in meters (default 1.0m for hold mode)
         """
-        print(f"Drone {self.drone_id}: Preparing for takeoff to {altitude}m")
-        
-        # Set mode to GUIDED first (required for PX4)
-        print(f"Drone {self.drone_id}: Setting mode to GUIDED")
-        self.set_mode('GUIDED')
-        
-        time.sleep(1)
-        
+        print(f"Drone {self.drone_id}: Preparing for takeoff to {altitude}m (will enter HOLD mode)")
+
         # Arm the vehicle
         print(f"Drone {self.drone_id}: Arming...")
-        self.master.arducopter_arm()
+        self.master.mav.command_long_send(
+            self.master.target_system,
+            self.master.target_component,
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            0,  # confirmation
+            1, 0, 0, 0,  # params 1-4
+            0, 0,  # latitude, longitude (not used for local)
+            0  # altitude - PX4 will hold at this altitude
+        )
         
         time.sleep(2)
         
@@ -145,9 +168,9 @@ class MavlinkTelemetry:
         self.master.motors_armed_wait()
         print(f"Drone {self.drone_id}: Armed confirmed")
         
-        time.sleep(1)
+        time.sleep(5)
         
-        # Send takeoff command
+        # Send takeoff command (will automatically enter LOITER/HOLD at target altitude)
         print(f"Drone {self.drone_id}: Sending takeoff command")
         self.master.mav.command_long_send(
             self.master.target_system,
@@ -156,18 +179,22 @@ class MavlinkTelemetry:
             0,  # confirmation
             0, 0, 0, 0,  # params 1-4
             0, 0,  # latitude, longitude (not used for local)
-            altitude  # altitude
+            altitude  # altitude - PX4 will hold at this altitude
         )
         
         # Wait for command acknowledgment
         ack = self.master.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
         if ack and ack.command == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
             if ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
-                print(f"Drone {self.drone_id}: Takeoff command accepted")
+                print(f"Drone {self.drone_id}: Takeoff command accepted - will enter HOLD at {altitude}m")
             else:
                 print(f"Drone {self.drone_id}: Takeoff command rejected: {ack.result}")
         
         print(f"Drone {self.drone_id}: Takeoff sequence complete")
+        time.sleep(5)
+        print(f"Drone {self.drone_id}: Setting mode to LOITER")
+        self.set_mode('LOITER')
+
     
     def land(self):
         """Land the vehicle"""
@@ -199,27 +226,41 @@ class MavlinkTelemetry:
         
         print(f"Drone {self.drone_id}: Flight termination command sent")
     
+    def reboot(self):
+        """Reboot the flight controller"""
+        print(f"Drone {self.drone_id}: Rebooting flight controller...")
+        
+        self.master.mav.command_long_send(
+            self.master.target_system,
+            self.master.target_component,
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+            0,  # confirmation
+            1,  # Autopilot reboot
+            0, 0, 0, 0, 0, 0
+        )
+        
+        print(f"Drone {self.drone_id}: Reboot command sent")
+    
+    def formation_command(self):
+        """Placeholder for formation command"""
+        print(f"Drone {self.drone_id}: Formation command - placeholder for future implementation")
+        # Future: Execute terminal command here
+        # import subprocess
+        # subprocess.Popen("your_formation_script.sh", shell=True)
+    
     def set_mode(self, mode):
         """
         Set flight mode
         
         Args:
-            mode: Flight mode string (e.g., 'GUIDED', 'LAND', 'RTL')
+            mode: Flight mode string (e.g., 'LOITER', 'LAND', 'RTL', 'HOLD')
         """
-        # Get mode ID
-        if mode not in self.master.mode_mapping():
-            print(f"Drone {self.drone_id}: Unknown mode {mode}")
-            return
-        
-        mode_id = self.master.mode_mapping()[mode]
-        
-        self.master.mav.set_mode_send(
-            self.master.target_system,
-            mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-            mode_id
-        )
-        
-        print(f"Drone {self.drone_id}: Set mode to {mode}")
+        try:
+            # Use mavutil's set_mode method which handles both ArduPilot and PX4
+            self.master.set_mode(mode)
+            print(f"Drone {self.drone_id}: Set mode to {mode}")
+        except Exception as e:
+            print(f"Drone {self.drone_id}: Failed to set mode to {mode}: {e}")
     
     def shutdown(self):
         """Shutdown telemetry system"""
@@ -288,7 +329,6 @@ class TelemetryServer:
             try:
                 self.send_to_client(client)
             except Exception as e:
-                print(f"Error sending to client: {e}")
                 self.clients.remove(client)
     
     def send_to_client(self, client):
@@ -299,9 +339,6 @@ class TelemetryServer:
         }) + '\n'
         try:
             client.sendall(message.encode())
-            # Debug: print data being sent
-            if self.drone_data:
-                print(f"Sent telemetry to client: {len(self.drone_data)} drones")
         except BrokenPipeError:
             raise  # Let caller handle cleanup
     
@@ -319,7 +356,6 @@ class TelemetryServer:
                     pass
                 except Exception as e:
                     if self.running:
-                        print(f"Command processing error: {e}")
                         self.clients.remove(client)
             time.sleep(0.01)
     
@@ -331,7 +367,7 @@ class TelemetryServer:
         print(f"Received command: {command}")
         
         if cmd_type == 'launch':
-            # Launch all drones
+            # Launch all drones (takeoff to 1m and hold)
             for drone in self.drones.values():
                 threading.Thread(target=drone.takeoff, args=(10.0,)).start()
         
@@ -344,6 +380,16 @@ class TelemetryServer:
             # Emergency stop all drones
             for drone in self.drones.values():
                 threading.Thread(target=drone.emergency_stop).start()
+        
+        elif cmd_type == 'reboot':
+            # Reboot all flight controllers
+            for drone in self.drones.values():
+                threading.Thread(target=drone.reboot).start()
+        
+        elif cmd_type == 'formation':
+            # Formation command for all drones
+            for drone in self.drones.values():
+                threading.Thread(target=drone.formation_command).start()
         
         elif cmd_type == 'drone_emergency' and drone_id in self.drones:
             # Individual drone emergency
@@ -376,9 +422,15 @@ class FleetTelemetryManager:
         self.server = TelemetryServer()
         
         # Configuration: drone_id -> connection_string
+        # Supports up to 6 drones now
         self.drone_configs = {
             1: 'udpin:0.0.0.0:14540',
             2: 'udpin:0.0.0.0:14541',
+            # Add more as needed:
+            # 3: 'udpin:0.0.0.0:14542',
+            # 4: 'udpin:0.0.0.0:14543',
+            # 5: 'udpin:0.0.0.0:14544',
+            # 6: 'udpin:0.0.0.0:14545',
         }
         
         # Initialize all drones
