@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: drone_fleet_dashboard
+    network_mode: host
     image: drone_fleet_dashboard:latest
     
     # X11 Display Configuration
@@ -24,9 +25,6 @@ services:
       
       # ROS master socket (if using local ROS master on host)
       - /tmp/ros:/tmp/ros:rw
-    
-    # Network configuration
-    network_mode: host
     
     # Allow container to access host displays
     privileged: false

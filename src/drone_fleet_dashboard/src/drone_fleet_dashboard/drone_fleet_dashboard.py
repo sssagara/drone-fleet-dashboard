@@ -1,21 +1,106 @@
 #!/usr/bin/env python3
 
-import rospy
 from rqt_gui_py.plugin import Plugin
-from python_qt_binding import loadUi
 from python_qt_binding.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton, QLineEdit, QGridLayout
 from python_qt_binding.QtCore import Qt, QTimer
 from python_qt_binding.QtGui import QFont, QPalette, QColor
-from sensor_msgs.msg import BatteryState
-from mavros_msgs.msg import State
-from geometry_msgs.msg import PoseStamped
-import subprocess
-import os
+import socket
+import json
+import threading
+
+class TelemetryClient:
+    """Client to receive telemetry from pymavlink script"""
+    
+    def __init__(self, host='127.0.0.1', port=5555):
+        self.host = host
+        self.port = port
+        self.socket = None
+        self.running = True
+        self.connected = False
+        self.telemetry_data = {}
+        self.data_lock = threading.Lock()
+        
+        # Start connection thread
+        self.thread = threading.Thread(target=self.connect_and_receive)
+        self.thread.daemon = True
+        self.thread.start()
+    
+    def connect_and_receive(self):
+        """Connect to telemetry server and receive data"""
+        while self.running:
+            try:
+                if not self.connected:
+                    print(f"Connecting to telemetry server {self.host}:{self.port}...")
+                    self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    self.socket.connect((self.host, self.port))
+                    self.connected = True
+                    print("Connected to telemetry server")
+                
+                # Receive data
+                data = self.socket.recv(4096)
+                if data:
+                    messages = data.decode().strip().split('\n')
+                    for msg in messages:
+                        if msg:
+                            try:
+                                message = json.loads(msg)
+                                if message.get('type') == 'telemetry':
+                                    with self.data_lock:
+                                        self.telemetry_data = message.get('data', {})
+                                    print(f"Received telemetry for {len(self.telemetry_data)} drones: {list(self.telemetry_data.keys())}")
+                            except json.JSONDecodeError as e:
+                                print(f"JSON decode error: {e}, data: {msg[:100]}")
+                                pass
+                else:
+                    # Connection closed
+                    self.connected = False
+                    self.socket.close()
+                    
+            except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError):
+                self.connected = False
+                if self.socket:
+                    self.socket.close()
+                import time
+                time.sleep(2)  # Wait before reconnecting
+            except Exception as e:
+                print(f"Telemetry client error: {e}")
+                self.connected = False
+                if self.socket:
+                    self.socket.close()
+                import time
+                time.sleep(2)
+    
+    def send_command(self, command):
+        """Send command to telemetry server"""
+        if self.connected and self.socket:
+            try:
+                message = json.dumps(command) + '\n'
+                self.socket.sendall(message.encode())
+                print(f"Command sent: {command}")
+            except Exception as e:
+                print(f"Error sending command: {e}")
+                self.connected = False
+    
+    def get_telemetry_data(self):
+        """Get current telemetry data (thread-safe)"""
+        with self.data_lock:
+            return self.telemetry_data.copy()
+    
+    def shutdown(self):
+        """Shutdown client"""
+        self.running = False
+        self.connected = False
+        if self.socket:
+            self.socket.close()
+
 
 class DroneFleetDashboard(Plugin):
     def __init__(self, context):
         super(DroneFleetDashboard, self).__init__(context)
         self.setObjectName('DroneFleetDashboard')
+        
+        # Create telemetry client
+        self.telemetry_client = TelemetryClient()
         
         # Create main widget
         self._widget = QWidget()
@@ -53,9 +138,9 @@ class DroneFleetDashboard(Plugin):
         """)
         left_layout.addWidget(warning)
         
-        # Create drone panels
+        # Create drone panels (only 2 for now)
         self.drones = []
-        for i in range(5):
+        for i in range(1, 3):  # Only drone 1 and 2
             drone_panel = self.create_drone_panel(i)
             self.drones.append(drone_panel)
             left_layout.addWidget(drone_panel['group'])
@@ -88,14 +173,11 @@ class DroneFleetDashboard(Plugin):
         right_buttons_layout = QVBoxLayout()
         right_buttons_layout.setSpacing(12)
         
-        # Create 6 global control buttons
+        # Create 3 active global control buttons
         button_configs = [
-            ("LAUNCH", "#004400", "#00ff00", self.global_command_1),
-            ("ABORT", "#660000", "#ff0000", self.global_command_2),
-            ("FORMATION", "#000066", "#0088ff", self.global_command_3),
-            ("LAND ALL", "#664400", "#ffaa00", self.global_command_4),
-            ("CALIBRATE", "#440066", "#aa00ff", self.global_command_5),
-            ("SYSTEM CHECK", "#333333", "#888888", self.global_command_6)
+            ("LAUNCH", "#004400", "#00ff00", self.global_command_launch),
+            ("LAND ALL", "#664400", "#ffaa00", self.global_command_land_all),
+            ("EMERGENCY STOP", "#660000", "#ff0000", self.global_command_emergency),
         ]
         
         for label, bg_color, border_color, callback in button_configs:
@@ -137,10 +219,10 @@ class DroneFleetDashboard(Plugin):
         self._widget.setLayout(main_layout)
         context.add_widget(self._widget)
         
-        # Timer for updating UI
+        # Timer for updating UI from telemetry data
         self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_ui)
-        self.update_timer.start(100)
+        self.update_timer.timeout.connect(self.update_ui_from_telemetry)
+        self.update_timer.start(100)  # Update every 100ms
     
     def setup_theme(self):
         """Setup dark Gundam-style theme"""
@@ -192,12 +274,12 @@ class DroneFleetDashboard(Plugin):
         main_layout = QVBoxLayout()
         main_layout.setSpacing(12)
         
-        # Top row - UAV namespace and Connect
+        # Top row - Connection info
         top_row = QHBoxLayout()
         top_row.setSpacing(10)
         
-        ns_label = QLabel("NAMESPACE:")
-        ns_label.setStyleSheet("""
+        port_label = QLabel(f"PORT: 1454{drone_id-1}")
+        port_label.setStyleSheet("""
             QLabel {
                 color: #ffff00;
                 font-size: 13px;
@@ -206,50 +288,7 @@ class DroneFleetDashboard(Plugin):
             }
         """)
         
-        ns_input = QLineEdit()
-        ns_input.setPlaceholderText(f"uav{drone_id}")
-        ns_input.setText(f"uav{drone_id}")
-        ns_input.setMaximumWidth(150)
-        ns_input.setStyleSheet("""
-            QLineEdit {
-                background: rgba(0, 0, 0, 200);
-                border: 2px solid #0088ff;
-                color: #00ff88;
-                padding: 6px 10px;
-                font-size: 13px;
-                font-family: 'Courier New';
-            }
-            QLineEdit:focus {
-                border: 2px solid #00ffff;
-            }
-        """)
-        
-        connect_btn = QPushButton("CONNECT")
-        connect_btn.setMaximumWidth(100)
-        connect_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #003366, stop:1 #004488);
-                border: 2px solid #0088ff;
-                color: #00ffff;
-                padding: 6px 15px;
-                font-size: 12px;
-                font-weight: bold;
-                font-family: 'Courier New';
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #004488, stop:1 #0055aa);
-            }
-            QPushButton:pressed {
-                background: #002244;
-            }
-        """)
-        connect_btn.clicked.connect(lambda: self.connect_drone(drone_id, ns_input.text()))
-        
-        top_row.addWidget(ns_label)
-        top_row.addWidget(ns_input)
-        top_row.addWidget(connect_btn)
+        top_row.addWidget(port_label)
         top_row.addStretch()
         
         # Info grid
@@ -351,14 +390,14 @@ class DroneFleetDashboard(Plugin):
                 background: #440000;
             }
         """)
-        cmd1_btn.clicked.connect(lambda: self.run_command1(drone_id, ns_input.text()))
+        cmd1_btn.clicked.connect(lambda: self.drone_emergency_stop(drone_id))
         
-        cmd2_btn = QPushButton("RETURN TO BASE")
+        cmd2_btn = QPushButton("LAND")
         cmd2_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #000066, stop:1 #0000aa);
-                border: 2px solid #0088ff;
+                    stop:0 #664400, stop:1 #996600);
+                border: 2px solid #ffaa00;
                 color: white;
                 padding: 8px 15px;
                 font-size: 12px;
@@ -367,13 +406,13 @@ class DroneFleetDashboard(Plugin):
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #000088, stop:1 #0000cc);
+                    stop:0 #885500, stop:1 #bb7700);
             }
             QPushButton:pressed {
-                background: #000044;
+                background: #443300;
             }
         """)
-        cmd2_btn.clicked.connect(lambda: self.run_command2(drone_id, ns_input.text()))
+        cmd2_btn.clicked.connect(lambda: self.drone_land(drone_id))
         
         buttons_layout.addWidget(cmd1_btn)
         buttons_layout.addWidget(cmd2_btn)
@@ -390,239 +429,147 @@ class DroneFleetDashboard(Plugin):
         drone_data = {
             'group': group,
             'id': drone_id,
-            'ns_input': ns_input,
             'status_value': status_value,
             'battery_value': battery_value,
             'mode_value': mode_value,
             'pos_value': pos_value,
-            'connected': False,
-            'battery_sub': None,
-            'state_sub': None,
-            'pose_sub': None,
-            'namespace': None
         }
         
         return drone_data
     
-    def connect_drone(self, drone_id, namespace):
-        """Connect to a drone with given namespace"""
-        if not namespace:
-            rospy.logwarn(f"UNIT {drone_id}: NO NAMESPACE PROVIDED")
+    def update_ui_from_telemetry(self):
+        """Update UI with telemetry data (called by Qt timer in main thread)"""
+        telemetry_data = self.telemetry_client.get_telemetry_data()
+        
+        if not telemetry_data:
+            # No data yet, mark as offline
+            self.check_connection_status()
             return
         
-        drone = self.drones[drone_id]
+        # Debug print (only occasionally)
+        if not hasattr(self, '_update_count'):
+            self._update_count = 0
+        self._update_count += 1
+        if self._update_count % 10 == 0:  # Print every 10 updates (1 second)
+            print(f"UI Update: Processing telemetry for {len(telemetry_data)} drones: {list(telemetry_data.keys())}")
         
-        # Disconnect previous subscribers
-        if drone['battery_sub']:
-            drone['battery_sub'].unregister()
-        if drone['state_sub']:
-            drone['state_sub'].unregister()
-        if drone['pose_sub']:
-            drone['pose_sub'].unregister()
-        
-        drone['namespace'] = namespace
-        
-        # Create ROS subscribers for MAVROS topics
-        try:
-            # Subscribe to battery topic
-            drone['battery_sub'] = rospy.Subscriber(
-                f'/{namespace}/mavros/battery',
-                BatteryState,
-                lambda msg, d=drone: self.battery_callback(msg, d)
-            )
+        for drone in self.drones:
+            drone_id = drone['id']
+            # JSON converts dict keys to strings, so we need to use string key
+            drone_id_str = str(drone_id)
             
-            # Subscribe to state topic (for mode)
-            drone['state_sub'] = rospy.Subscriber(
-                f'/{namespace}/mavros/state',
-                State,
-                lambda msg, d=drone: self.state_callback(msg, d)
-            )
+            if self._update_count <= 3:
+                print(f"DEBUG: Looking for drone_id={drone_id_str} (original: {drone_id})")
             
-            # Subscribe to local position topic
-            drone['pose_sub'] = rospy.Subscriber(
-                f'/{namespace}/mavros/local_position/pose',
-                PoseStamped,
-                lambda msg, d=drone: self.pose_callback(msg, d)
-            )
-            
-            drone['connected'] = True
-            drone['status_value'].setText("ONLINE")
-            drone['status_value'].setStyleSheet("QLabel { color: #00ff00; font-weight: bold; font-size: 14px; }")
-            rospy.loginfo(f"UNIT {drone_id}: CONNECTION ESTABLISHED - /{namespace}")
-            
-        except Exception as e:
-            rospy.logerr(f"UNIT {drone_id}: CONNECTION FAILED - {str(e)}")
-            drone['status_value'].setText("ERROR")
-            drone['status_value'].setStyleSheet("QLabel { color: #ffaa00; font-weight: bold; font-size: 14px; }")
-    
-    def battery_callback(self, msg, drone):
-        """Update battery voltage from MAVROS BatteryState message"""
-        voltage = msg.voltage
-        drone['battery_value'].setText(f"{voltage:.2f} V")
-        
-        # Color code based on voltage
-        if voltage > 11.5:
-            color = "#00ff00"
-        elif voltage > 10.5:
-            color = "#ffaa00"
-        else:
-            color = "#ff0000"
-        
-        drone['battery_value'].setStyleSheet(f"QLabel {{ color: {color}; font-weight: bold; font-size: 14px; }}")
-    
-    def state_callback(self, msg, drone):
-        """Update flight mode from MAVROS State message"""
-        mode = msg.mode
-        armed = msg.armed
-        
-        # Display mode with armed status
-        if armed:
-            display_mode = f"{mode} (ARMED)"
-        else:
-            display_mode = mode
-        
-        drone['mode_value'].setText(display_mode)
-        
-        # Color code based on mode and armed status
-        if armed:
-            if mode in ["AUTO.MISSION", "AUTO.TAKEOFF", "AUTO.LOITER"]:
-                color = "#0088ff"  # Blue for auto modes
-            elif mode in ["MANUAL", "STABILIZED", "ALTCTL", "POSCTL"]:
-                color = "#00ff88"  # Green for manual modes
+            if drone_id_str in telemetry_data:
+                data = telemetry_data[drone_id_str]
+                
+                # Debug print for first few updates
+                if self._update_count <= 3:
+                    print(f"  Drone {drone_id}: Voltage={data.get('battery_voltage', 0):.2f}V, Mode={data.get('flight_mode', 'N/A')}, Armed={data.get('armed', False)}")
+                
+                # Update status
+                drone['status_value'].setText("ONLINE")
+                drone['status_value'].setStyleSheet("QLabel { color: #00ff00; font-weight: bold; font-size: 14px; }")
+                
+                # Update battery
+                voltage = data.get('battery_voltage', 0.0)
+                drone['battery_value'].setText(f"{voltage:.2f} V")
+                
+                if voltage > 11.5:
+                    color = "#00ff00"
+                elif voltage > 10.5:
+                    color = "#ffaa00"
+                else:
+                    color = "#ff0000"
+                
+                drone['battery_value'].setStyleSheet(f"QLabel {{ color: {color}; font-weight: bold; font-size: 14px; }}")
+                
+                # Update mode
+                mode = data.get('flight_mode', 'UNKNOWN')
+                armed = data.get('armed', False)
+                
+                if armed:
+                    display_mode = f"{mode} (ARMED)"
+                else:
+                    display_mode = mode
+                
+                drone['mode_value'].setText(display_mode)
+                
+                if armed:
+                    if mode in ["GUIDED", "AUTO", "MISSION", "AUTO_MISSION", "AUTO_TAKEOFF"]:
+                        color = "#0088ff"
+                    elif mode in ["MANUAL", "STABILIZE", "LOITER", "STABILIZED", "POSCTL", "ALTCTL"]:
+                        color = "#00ff88"
+                    else:
+                        color = "#ffaa00"
+                else:
+                    color = "#888888"
+                
+                drone['mode_value'].setStyleSheet(f"QLabel {{ color: {color}; font-weight: bold; font-size: 14px; }}")
+                
+                # Update position
+                position = data.get('position', [0, 0, 0])
+                drone['pos_value'].setText(f"X: {position[0]:.2f} / Y: {position[1]:.2f} / Z: {position[2]:.2f}")
+                drone['pos_value'].setStyleSheet("QLabel { color: #00ff88; font-weight: bold; font-size: 13px; }")
             else:
-                color = "#ffaa00"  # Orange for other armed modes
-        else:
-            color = "#888888"  # Gray for disarmed
+                # Drone not in telemetry data - mark as offline
+                if self._update_count <= 3:
+                    print(f"  Drone {drone_id}: NOT IN TELEMETRY DATA (looking for key '{drone_id_str}')")
         
-        drone['mode_value'].setStyleSheet(f"QLabel {{ color: {color}; font-weight: bold; font-size: 14px; }}")
+        # Check connection status periodically
+        if self._update_count % 10 == 0:
+            self.check_connection_status()
     
-    def pose_callback(self, msg, drone):
-        """Update position from MAVROS local_position/pose"""
-        x = msg.pose.position.x
-        y = msg.pose.position.y
-        z = msg.pose.position.z
-        drone['pos_value'].setText(f"X: {x:.2f} / Y: {y:.2f} / Z: {z:.2f}")
-        drone['pos_value'].setStyleSheet("QLabel { color: #00ff88; font-weight: bold; font-size: 13px; }")
+    def check_connection_status(self):
+        """Check connection status periodically"""
+        if not self.telemetry_client.connected:
+            # Mark all drones as offline if server disconnected
+            for drone in self.drones:
+                drone['status_value'].setText("OFFLINE")
+                drone['status_value'].setStyleSheet("QLabel { color: #ff0000; font-weight: bold; font-size: 14px; }")
     
-    def run_command1(self, drone_id, namespace):
-        """Emergency Stop - Send land command"""
-        if not namespace:
-            rospy.logwarn(f"UNIT {drone_id}: NO NAMESPACE CONFIGURED")
-            return
-        
-        # Use MAVROS land service
-        command = f"rosservice call /{namespace}/mavros/cmd/land"
-        
-        try:
-            rospy.loginfo(f"UNIT {drone_id}: EMERGENCY LANDING ACTIVATED")
-            subprocess.Popen(command, shell=True)
-        except Exception as e:
-            rospy.logerr(f"UNIT {drone_id}: COMMAND FAILED - {str(e)}")
+    def drone_emergency_stop(self, drone_id):
+        """Individual drone emergency stop"""
+        print(f"UNIT {drone_id}: EMERGENCY STOP ACTIVATED")
+        self.telemetry_client.send_command({
+            'type': 'drone_emergency',
+            'drone_id': drone_id
+        })
     
-    def run_command2(self, drone_id, namespace):
-        """Return to Base - Send RTL command"""
-        if not namespace:
-            rospy.logwarn(f"UNIT {drone_id}: NO NAMESPACE CONFIGURED")
-            return
-        
-        # Set mode to RTL (Return to Launch)
-        command = f"rosservice call /{namespace}/mavros/set_mode \"custom_mode: 'AUTO.RTL'\""
-        
-        try:
-            rospy.loginfo(f"UNIT {drone_id}: RETURN TO BASE COMMAND SENT")
-            subprocess.Popen(command, shell=True)
-        except Exception as e:
-            rospy.logerr(f"UNIT {drone_id}: COMMAND FAILED - {str(e)}")
+    def drone_land(self, drone_id):
+        """Individual drone land"""
+        print(f"UNIT {drone_id}: LAND COMMAND SENT")
+        self.telemetry_client.send_command({
+            'type': 'drone_land',
+            'drone_id': drone_id
+        })
     
     # Global fleet control commands
-    def global_command_1(self):
-        """LAUNCH - Arm and takeoff all drones"""
-        rospy.loginfo("FLEET COMMAND: LAUNCH SEQUENCE INITIATED")
-        for drone in self.drones:
-            if drone['connected'] and drone['namespace']:
-                # Arm the drone
-                arm_cmd = f"rosservice call /{drone['namespace']}/mavros/cmd/arming \"value: true\""
-                subprocess.Popen(arm_cmd, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: ARM COMMAND SENT")
-                
-                # Set to offboard or mission mode
-                mode_cmd = f"rosservice call /{drone['namespace']}/mavros/set_mode \"custom_mode: 'AUTO.MISSION'\""
-                subprocess.Popen(mode_cmd, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: MISSION MODE ACTIVATED")
+    def global_command_launch(self):
+        """LAUNCH - Takeoff all drones"""
+        print("FLEET COMMAND: LAUNCH SEQUENCE INITIATED")
+        self.telemetry_client.send_command({'type': 'launch'})
     
-    def global_command_2(self):
-        """ABORT - Disarm all drones"""
-        rospy.loginfo("FLEET COMMAND: ABORT MISSION")
-        for drone in self.drones:
-            if drone['connected'] and drone['namespace']:
-                # Land first
-                land_cmd = f"rosservice call /{drone['namespace']}/mavros/cmd/land"
-                subprocess.Popen(land_cmd, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: LANDING COMMAND SENT")
-    
-    def global_command_3(self):
-        """FORMATION - Set all to position control mode"""
-        rospy.loginfo("FLEET COMMAND: FORMATION MODE ACTIVATED")
-        for drone in self.drones:
-            if drone['connected'] and drone['namespace']:
-                command = f"rosservice call /{drone['namespace']}/mavros/set_mode \"custom_mode: 'POSCTL'\""
-                subprocess.Popen(command, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: POSITION CONTROL MODE ENGAGED")
-    
-    def global_command_4(self):
+    def global_command_land_all(self):
         """LAND ALL"""
-        rospy.loginfo("FLEET COMMAND: LAND ALL UNITS")
-        for drone in self.drones:
-            if drone['connected'] and drone['namespace']:
-                command = f"rosservice call /{drone['namespace']}/mavros/cmd/land"
-                subprocess.Popen(command, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: LANDING COMMAND SENT")
+        print("FLEET COMMAND: LAND ALL UNITS")
+        self.telemetry_client.send_command({'type': 'land_all'})
     
-    def global_command_5(self):
-        """CALIBRATE - Start calibration"""
-        rospy.loginfo("FLEET COMMAND: CALIBRATION SEQUENCE")
-        for drone in self.drones:
-            if drone['connected'] and drone['namespace']:
-                # Example: calibrate magnetometer
-                command = f"rosservice call /{drone['namespace']}/mavros/cmd/calibrate_mag"
-                subprocess.Popen(command, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: CALIBRATION STARTED")
-    
-    def global_command_6(self):
-        """SYSTEM CHECK - Request system status"""
-        rospy.loginfo("FLEET COMMAND: SYSTEM CHECK INITIATED")
-        for drone in self.drones:
-            if drone['connected'] and drone['namespace']:
-                # Echo system status
-                command = f"rostopic echo /{drone['namespace']}/mavros/sys_status -n 1"
-                subprocess.Popen(command, shell=True)
-                rospy.loginfo(f"UNIT {drone['id']}: SYSTEM CHECK IN PROGRESS")
-    
-    def update_ui(self):
-        """Periodic UI update"""
-        pass
+    def global_command_emergency(self):
+        """EMERGENCY STOP ALL"""
+        print("FLEET COMMAND: EMERGENCY STOP ALL UNITS")
+        self.telemetry_client.send_command({'type': 'emergency'})
     
     def shutdown_plugin(self):
         """Cleanup"""
         self.update_timer.stop()
-        for drone in self.drones:
-            if drone['battery_sub']:
-                drone['battery_sub'].unregister()
-            if drone['state_sub']:
-                drone['state_sub'].unregister()
-            if drone['pose_sub']:
-                drone['pose_sub'].unregister()
+        self.telemetry_client.shutdown()
     
     def save_settings(self, plugin_settings, instance_settings):
         """Save settings"""
-        for i, drone in enumerate(self.drones):
-            ns = drone['ns_input'].text()
-            if ns:
-                instance_settings.set_value(f'drone_{i}_ns', ns)
+        pass
     
     def restore_settings(self, plugin_settings, instance_settings):
         """Restore settings"""
-        for i, drone in enumerate(self.drones):
-            ns = instance_settings.value(f'drone_{i}_ns', '')
-            if ns:
-                drone['ns_input'].setText(ns)
+        pass
