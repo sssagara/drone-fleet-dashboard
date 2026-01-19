@@ -1,0 +1,47 @@
+services:
+  drone_fleet_dashboard_ros:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: drone_fleet_dashboard_ros
+    network_mode: host
+    image: drone_fleet_dashboard:latest
+    
+    # X11 Display Configuration
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - ROS_MASTER_URI=http://localhost:11311
+      - ROS_HOSTNAME=localhost
+    
+    # Volume mounts for X11 and development
+    volumes:
+      # X11 socket for GUI display
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /home/$USER/.Xauthority:/root/.Xauthority:rw
+      
+      # Source code for live code changes
+      - .:/root/catkin_ws/src:rw
+      
+      # ROS master socket (if using local ROS master on host)
+      - /tmp/ros:/tmp/ros:rw
+    
+    # Allow container to access host displays
+    privileged: false
+    ipc: host
+    pid: host
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+    
+    # Restart policy
+    restart: "no"
+    
+    # Entry point
+    stdin_open: true
+    tty: true
+    command: /bin/bash -c "source /opt/ros/noetic/setup.bash && cd /root/catkin_ws && catkin_make && source devel/setup.bash && (python3 /root/catkin_ws/src/ros_telemetry.py &) && sleep 2 && roslaunch drone_fleet_dashboard drone_fleet_dashboard_ros.launch"

@@ -5,15 +5,33 @@
     <description>
       A dashboard for monitoring and controlling a fleet of up to 5 drones simultaneously.
       Features include battery voltage monitoring, flight mode display, IP address configuration,
-      and custom command buttons.
+      and custom command buttons. (PyMAVLink version)
     </description>
     <qtgui>
       <group>
         <label>Drone Management</label>
       </group>
-      <label>Drone Fleet Dashboard</label>
+      <label>Drone Fleet Dashboard (PyMAVLink)</label>
       <icon type="theme">system-run</icon>
-      <statustip>Monitor and control multiple drones</statustip>
+      <statustip>Monitor and control multiple drones (PyMAVLink)</statustip>
+    </qtgui>
+  </class>
+  
+  <class name="Drone Fleet Dashboard ROS" 
+         type="drone_fleet_dashboard.drone_fleet_dashboard_ros.DroneFleetDashboardROS" 
+         base_class_type="rqt_gui_py::Plugin">
+    <description>
+      A ROS/MAVROS-based dashboard for monitoring and controlling a fleet of up to 6 drones simultaneously.
+      Features include battery voltage monitoring, flight mode display, local position tracking,
+      and fleet command buttons. Uses ROS topics for communication.
+    </description>
+    <qtgui>
+      <group>
+        <label>Drone Management</label>
+      </group>
+      <label>Drone Fleet Dashboard (ROS)</label>
+      <icon type="theme">system-run</icon>
+      <statustip>Monitor and control multiple drones via ROS/MAVROS</statustip>
     </qtgui>
   </class>
 </library>

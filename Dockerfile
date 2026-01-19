@@ -33,6 +33,17 @@ RUN apt-get update && apt-get install -y \
     ros-noetic-rqt-py-common \
     && rm -rf /var/lib/apt/lists/*
 
+# Install MAVROS packages for ROS version
+RUN apt-get update && apt-get install -y \
+    ros-noetic-mavros-msgs \
+    ros-noetic-geometry-msgs \
+    ros-noetic-sensor-msgs \
+    ros-noetic-std-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pymavlink for PyMAVLink version
+RUN pip3 install pymavlink
+
 # Create and initialize catkin workspace
 RUN mkdir -p $CATKIN_WS/src
 WORKDIR $CATKIN_WS

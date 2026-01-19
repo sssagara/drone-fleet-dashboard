@@ -1,0 +1,7 @@
+<launch>
+  <!-- ROS version of Drone Fleet Dashboard -->
+  <node name="drone_fleet_dashboard_ros" pkg="rqt_gui" type="rqt_gui" 
+        args="--standalone drone_fleet_dashboard.drone_fleet_dashboard_ros.DroneFleetDashboardROS"
+        output="screen" required="true">
+  </node>
+</launch>
